@@ -1,0 +1,26 @@
+services:
+  envoy:
+    depends_on:
+      - upstream
+    image: envoyproxy/envoy:v1.31-latest
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "debug"]
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml
+      # With CRL IDP Extension - these will fail
+      # - ./make-certificates/with-idp/ca-chain.crt:/etc/trust-store.pem
+      # - ./make-certificates/with-idp/ca-bundle.crl:/etc/crl.pem
+      # - ./make-certificates/with-idp/service.crt:/etc/service.crt
+      # - ./make-certificates/with-idp/service.key:/etc/service.key
+
+      # Without CRL IDP Extension - these will succeed
+      # - ./make-certificates/without-idp/ca-chain.crt:/etc/trust-store.pem
+      # - ./make-certificates/without-idp/ca-bundle.crl:/etc/crl.pem
+      # - ./make-certificates/without-idp/service.crt:/etc/service.crt
+      # - ./make-certificates/without-idp/service.key:/etc/service.key
+    ports:
+      - 7443:7443
+
+  upstream:
+    image: hashicorp/http-echo
+    ports:
+      - 5678:5678

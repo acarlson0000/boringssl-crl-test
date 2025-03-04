@@ -72,3 +72,33 @@ eg.
     ld: warning: ignoring duplicate libraries: '-lcrypto', '-lssl'
     Certificate is valid and has not been revoked!
     Client certificate is valid against the CA trust store and CRLs.
+
+# Docker w/ Envoy
+```
+  Ensure your certs are created first:
+    > cd make-certificates
+    > make with-idp
+    > make without-idp
+
+  Update `docker-compose.yaml` with the specific CA / CRL bundle you want to use and run it:
+  > docker compose -f docker-compose.yaml up
+
+  Call the Envoy Application via curl:
+
+  # With IDP
+  > curl -v -k https://localhost:7443 --cert ./make-certificates/with-idp/leaf.crt --key ./make-certificates/with-idp/leaf.key --cacert ./make-certificates/with-idp/ca-chain.crt
+  This will fail.
+
+  > curl: (56) LibreSSL SSL_read: LibreSSL/3.3.6: error:1404C418:SSL routines:ST_OK:tlsv1 alert unknown ca, errno 0
+
+  Output in the debug envoy application logs:
+  > envoy-1     | [2025-03-04 09:50:46.244][16][debug][connection] [source/common/tls/cert_validator/default_validator.cc:321] verify cert failed: X509_verify_cert: certificate verification error at depth 0: Different CRL scope
+  > envoy-1     | [2025-03-04 09:50:46.244][16][debug][connection] [source/common/tls/ssl_socket.cc:251] [Tags: "ConnectionId":"5"] remote address:192.168.65.1:33070,TLS_error:|268435581:SSL routines:OPENSSL_internal:CERTIFICATE_VERIFY_FAILED:TLS_error_end
+
+  # Without IDP
+  > curl -v -k https://localhost:7443 --cert ./make-certificates/without-idp/leaf.crt --key ./make-certificates/without-idp/leaf.key --cacert ./make-certificates/without-idp/ca-chain.crt
+
+  Notice the success:
+  > hello-world
+
+```
