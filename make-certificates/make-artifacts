@@ -1,0 +1,269 @@
+#! /usr/bin/python3
+
+import datetime
+import sys
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import AuthorityInformationAccessOID, \
+        ExtendedKeyUsageOID, NameOID
+
+
+KU = x509.KeyUsage(True, True, True, True, True, True, True, True, True)
+EKU = x509.ExtendedKeyUsage([
+    x509.OID_CLIENT_AUTH,
+    x509.OID_CODE_SIGNING,
+    x509.OID_EMAIL_PROTECTION,
+    ExtendedKeyUsageOID.IPSEC_IKE,
+    x509.OID_SERVER_AUTH,
+    x509.OID_TIME_STAMPING,
+])
+
+
+def serialise_key(key):
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+
+
+def serialise_certificates(certificates):
+    pems = [c.public_bytes(serialization.Encoding.PEM) for c in certificates]
+    return b"".join(pems)
+
+
+def write_key(filename, key):
+    with open(filename, "wb") as f:
+        f.write(serialise_key(key))
+
+
+def write_certificates(filename, certificates):
+    with open(filename, "wb") as f:
+        f.write(serialise_certificates(certificates))
+
+
+def make_root_ca(start, end):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+    pkey = key.public_key()
+    subject_key_id = x509.SubjectKeyIdentifier.from_public_key(pkey)
+    a, n = x509.NameAttribute, NameOID
+    subject = x509.Name([
+        a(n.COUNTRY_NAME, "US"),
+        a(n.ORGANIZATION_NAME, "Google Trust Services LLC"),
+        a(n.COMMON_NAME, "GTS Root R1"),
+    ])
+    return key, (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(pkey)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(start)
+        .not_valid_after(end)
+        .add_extension(
+            x509.KeyUsage(True, False, False, False, False, True, True, False, False),  # noqa
+            True,
+        )
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=None),
+            critical=True,
+        )
+        .add_extension(subject_key_id, critical=False)
+    ).sign(key, hashes.SHA256())
+
+
+def make_root_crl(root_key, root_crt, start, end):
+    crl = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(root_crt.subject)
+        .last_update(start)
+        .next_update(end)
+        .add_extension(x509.CRLNumber(4106), False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                root_crt.public_key(),
+            ),
+            False,
+        )
+    )
+    return crl.sign(root_key, hashes.SHA256())
+
+
+def make_intermediate_ca(root_key, root_crt, start, end):
+    a, n = x509.NameAttribute, NameOID
+    subject = x509.Name([
+        a(n.COUNTRY_NAME, "US"),
+        a(n.ORGANIZATION_NAME, "Google Trust Services"),
+        a(n.COMMON_NAME, "WR2"),
+    ])
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pkey = key.public_key()
+    subject_key_id = x509.SubjectKeyIdentifier.from_public_key(pkey)
+    return key, (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(root_crt.subject)
+        .public_key(pkey)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(start)
+        .not_valid_after(end)
+        .add_extension(x509.KeyUsage(True, False, False, False, False, True, True, False, False), True)  # noqa
+        .add_extension(
+            x509.ExtendedKeyUsage([
+                x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
+                x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+            ]),
+            False,
+        )
+        .add_extension(x509.BasicConstraints(True, 0), True)
+        .add_extension(subject_key_id, False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()), False)  # noqa
+        .add_extension(
+            x509.AuthorityInformationAccess([
+                x509.AccessDescription(
+                    AuthorityInformationAccessOID.CA_ISSUERS,
+                    x509.UniformResourceIdentifier("http://i.pki.goog/r1.crt"),
+                )
+            ]),
+            False,
+        )
+        .add_extension(
+            x509.CRLDistributionPoints([
+                x509.DistributionPoint(
+                    [
+                        x509.UniformResourceIdentifier("http://c.pki.goog/r/r1.crl"),  # noqa
+                    ],
+                    None,
+                    None,
+                    None,
+                )
+            ]),
+            False,
+        )
+        .add_extension(
+            x509.CertificatePolicies([
+                x509.PolicyInformation(
+                    x509.ObjectIdentifier("2.23.140.1.2.1"),
+                    [],
+                )
+            ]),
+            False,
+        )
+    ).sign(root_key, hashes.SHA256())
+
+
+def make_intermediate_crl(issuer_key, issuer_crt, start, end, with_idp):
+    aki = x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_crt.public_key())  # noqa
+    crl = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(issuer_crt.subject)
+        .last_update(start)
+        .next_update(end)
+        .add_extension(aki, False)
+        .add_extension(x509.CRLNumber(32867), False)
+    )
+    if with_idp:
+        crl = crl.add_extension(
+            x509.IssuingDistributionPoint(
+                [x509.UniformResourceIdentifier("http://c.pki.goog/wr2/GSyT1N4PBrg.crl")],  # noqa
+                None,
+                True,
+                False,
+                None,
+                False,
+                False,
+            ),
+            True,
+        )
+    return crl.sign(issuer_key, hashes.SHA256())
+
+
+def make_certificate(issuer_key, issuer_crt, start, end):
+    a, n = x509.NameAttribute, NameOID
+    subject = x509.Name([
+        a(n.EMAIL_ADDRESS, "test.user@example.com"),
+        a(n.COMMON_NAME, "Test User"),
+        a(n.ORGANIZATIONAL_UNIT_NAME, "Organisational Unit name"),
+        a(n.ORGANIZATION_NAME, "Organisation name"),
+        a(n.LOCALITY_NAME, "London"),
+        a(n.COUNTRY_NAME, "GB"),
+    ])
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pkey = key.public_key()
+    subject_key_id = x509.SubjectKeyIdentifier.from_public_key(pkey)
+    key_id = subject_key_id.digest.hex()
+    return key, (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer_crt.subject)
+        .public_key(pkey)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(start)
+        .not_valid_after(end)
+        .add_extension(x509.KeyUsage(True, False, False, False, False, False, False, False, False), True)  # noqa
+        .add_extension(
+            x509.ExtendedKeyUsage([
+                x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+            ]),
+            False,
+        )
+        .add_extension(x509.BasicConstraints(False, None), False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(pkey), False)  # noqa
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_key.public_key()), False)  # noqa
+        .add_extension(
+            x509.AuthorityInformationAccess([
+                x509.AccessDescription(
+                    AuthorityInformationAccessOID.CA_ISSUERS,
+                    x509.UniformResourceIdentifier("http://i.pki.goog/wr2.crt")  # noqa
+                ),
+            ]),
+            False,
+        )
+        .add_extension(x509.CRLDistributionPoints([
+            x509.DistributionPoint(
+                [x509.UniformResourceIdentifier("http://c.pki.goog/wr2/GSyT1N4PBrg.crl")],  # noqa
+                None,
+                None,
+                None,
+            ),
+        ]), False)
+    ).sign(issuer_key, hashes.SHA256())
+
+
+def main(argv):
+    if len(argv) == 1:
+        with_idp = True
+    else:
+        with_idp = argv[1] in ("1", "y", "yes", "idp", "on")
+
+    start = datetime.datetime(2025, 1, 1, 12, 30, 0)
+    end = datetime.datetime(2030, 1, 1, 12, 30, 0)
+
+    root_key, root_crt = make_root_ca(start, end)
+    write_key("root.key", root_key)
+    write_certificates("root.crt", [root_crt])
+
+    root_crl = make_root_crl(root_key, root_crt, start, end)
+    write_certificates("root.crl", [root_crl])
+
+    int_key, int_crt = make_intermediate_ca(root_key, root_crt, start, end)
+    write_key("intermediate.key", int_key)
+    write_certificates("intermediate.crt", [int_crt])
+
+    int_crl = make_intermediate_crl(int_key, int_crt, start, end, with_idp)
+    write_certificates("intermediate.crl", [int_crl])
+
+    leaf_key, leaf_crt = make_certificate(int_key, int_crt, start, end)
+    write_key("leaf.key", leaf_key)
+    write_certificates("leaf.crt", [leaf_crt])
+
+    write_certificates("ca-chain.crt", [int_crt, root_crt])
+    write_certificates("ca-bundle.crl", [int_crl, root_crl])
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
