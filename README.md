@@ -26,19 +26,19 @@ Much appreciated
 
 # Reproduction Case
 
-Clone & Build BoringSSL
+    # Clone this repository
+    git clone https://github.com/acarlson0000/boringssl-crl-test.git
+
+    cd boringssl-crl-test
+
+    # Additionally Clone & Build BoringSSL
 
     git clone https://boringssl.googlesource.com/boringssl
     cd boringssl
     mkdir build && cd build
     cmake ..
     make
-
-
-# Test Code / Bundle
-
-    # Clone this repository
-    git clone https://github.com/acarlson0000/boringssl-crl-test.git
+    cd ../../
 
     # Set up Certificate Bundles
     cd make-certificates
@@ -49,6 +49,7 @@ Clone & Build BoringSSL
     # To create the bundles without CRL IDP Extension
     make without-idp
 
+    cd ..
     # Run Test Code
     # Make sure to update CGO_LDFLAGS with the correct path to your boringssl build:
     export CGO_LDFLAGS="-L$(pwd)/boringssl/build -lssl -lcrypto"
@@ -59,7 +60,7 @@ eg.
   # With CRL IDP Extension
 
     export CGO_LDFLAGS="-L$(pwd)/boringssl/build -lssl -lcrypto"
-    go run verify_cert_and_crl.go boringssl-test/make-certificates/with-idp/leaf.crt boringssl-test/make-certificates/with-idp/ca-chain.crt boringssl-test/make-certificates/with-idp/ca-bundle.crl
+    go run verify_cert_and_crl.go make-certificates/with-idp/leaf.crt make-certificates/with-idp/ca-chain.crt make-certificates/with-idp/ca-bundle.crl
     # command-line-arguments
     ld: warning: ignoring duplicate libraries: '-lcrypto', '-lssl'
     Validation failed: certificate verification failed: Different CRL scope (error code: 44)
@@ -67,7 +68,7 @@ eg.
   # Without CRL IDP Extension
 
     export CGO_LDFLAGS="-L$(pwd)/boringssl/build -lssl -lcrypto"
-    go run verify_cert_and_crl.go boringssl-test/make-certificates/without-idp/leaf.crt boringssl-test/make-certificates/without-idp/ca-chain.crt boringssl-test/make-certificates/without-idp/ca-bundle.crl
+    go run verify_cert_and_crl.go make-certificates/without-idp/leaf.crt make-certificates/without-idp/ca-chain.crt make-certificates/without-idp/ca-bundle.crl
     # command-line-arguments
     ld: warning: ignoring duplicate libraries: '-lcrypto', '-lssl'
     Certificate is valid and has not been revoked!
