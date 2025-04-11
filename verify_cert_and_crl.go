@@ -11,21 +11,26 @@ package main
 #include <stdlib.h>
 
 typedef STACK_OF(X509) STACK_OF_X509;  // Define the type explicitly
-
 */
 import "C"
+
 import (
 	"fmt"
 	"os"
+	"strings"
 	"unsafe"
 )
 
 // loadCertificate loads a single X.509 certificate from a file
 func loadCertificate(certPath string) (*C.X509, error) {
-	certFile := C.CString(certPath)
-	defer C.free(unsafe.Pointer(certFile))
+	fmt.Printf("Loading certificate from: %s\n", certPath) // Add logging
+	cPath := C.CString(certPath)
+	defer C.free(unsafe.Pointer(cPath))
 
-	file := C.fopen(certFile, C.CString("r"))
+	mode := C.CString("r")
+	defer C.free(unsafe.Pointer(mode))
+
+	file := C.fopen(cPath, mode)
 	if file == nil {
 		return nil, fmt.Errorf("failed to open certificate file: %s", certPath)
 	}
@@ -33,141 +38,168 @@ func loadCertificate(certPath string) (*C.X509, error) {
 
 	cert := C.PEM_read_X509(file, nil, nil, nil)
 	if cert == nil {
-		return nil, fmt.Errorf("failed to load certificate from: %s", certPath)
+		return nil, fmt.Errorf("failed to read certificate from: %s", certPath)
 	}
 	return cert, nil
 }
 
-// loadCertificates loads a stack of X.509 certificates from a chain file (CA bundle)
-func loadCertificates(certPath string) (*C.STACK_OF_X509, error) {
-	certFile := C.CString(certPath)
-	defer C.free(unsafe.Pointer(certFile))
-
-	file := C.fopen(certFile, C.CString("r"))
-	if file == nil {
-		return nil, fmt.Errorf("failed to open certificate file: %s", certPath)
-	}
-	defer C.fclose(file)
-
-	certs := C.sk_X509_new_null()
-	if certs == nil {
+// loadCertificates loads multiple X.509 certificates from one or more files
+func loadCertificates(paths []string) (*C.STACK_OF_X509, error) {
+	fmt.Printf("Loading CA certificates from paths: %v\n", paths) // Add logging
+	stack := C.sk_X509_new_null()
+	if stack == nil {
 		return nil, fmt.Errorf("failed to create X509 stack")
 	}
 
-	for {
-		cert := C.PEM_read_X509(file, nil, nil, nil)
-		if cert == nil {
-			break
+	for _, path := range paths {
+		cPath := C.CString(path)
+		defer C.free(unsafe.Pointer(cPath))
+
+		mode := C.CString("r")
+		defer C.free(unsafe.Pointer(mode))
+
+		file := C.fopen(cPath, mode)
+		if file == nil {
+			return nil, fmt.Errorf("failed to open cert file: %s", path)
 		}
-		C.sk_X509_push(certs, cert)
-	}
+		defer C.fclose(file)
 
-	return certs, nil
+		for {
+			cert := C.PEM_read_X509(file, nil, nil, nil)
+			if cert == nil {
+				break
+			}
+			C.sk_X509_push(stack, cert)
+		}
+	}
+	return stack, nil
 }
 
-// loadCRL loads a CRL (Certificate Revocation List) from a file
-func loadCRL(crlPath string) (*C.X509_CRL, error) {
-	crlFile := C.CString(crlPath)
-	defer C.free(unsafe.Pointer(crlFile))
+// loadCRLs loads multiple CRLs from one or more files
+func loadCRLs(paths []string) ([]*C.X509_CRL, error) {
+	fmt.Printf("Loading CRLs from paths: %v\n", paths) // Add logging
+	var crls []*C.X509_CRL
 
-	file := C.fopen(crlFile, C.CString("r"))
-	if file == nil {
-		return nil, fmt.Errorf("failed to open CRL file: %s", crlPath)
-	}
-	defer C.fclose(file)
+	for _, path := range paths {
+		cPath := C.CString(path)
+		defer C.free(unsafe.Pointer(cPath))
 
-	crl := C.PEM_read_X509_CRL(file, nil, nil, nil)
-	if crl == nil {
-		return nil, fmt.Errorf("failed to load CRL from: %s", crlPath)
+		mode := C.CString("r")
+		defer C.free(unsafe.Pointer(mode))
+
+		file := C.fopen(cPath, mode)
+		if file == nil {
+			return nil, fmt.Errorf("failed to open CRL file: %s", path)
+		}
+		defer C.fclose(file)
+
+		for {
+			crl := C.PEM_read_X509_CRL(file, nil, nil, nil)
+			if crl == nil {
+				break
+			}
+			crls = append(crls, crl)
+		}
 	}
-	return crl, nil
+	return crls, nil
 }
 
-// validateCertificate verifies the client certificate against a CA and checks CRL
-func validateCertificate(certPath, caCertPath, crlPath string) error {
-	// Load client certificate
+// validateCertificate verifies the client certificate using CA bundle and CRLs
+func validateCertificate(certPath string, caPaths []string, crlPaths []string) error {
+	fmt.Println("Starting certificate validation...") // Add logging
+
 	clientCert, err := loadCertificate(certPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("error loading client certificate: %v", err)
 	}
 	defer C.X509_free(clientCert)
+	fmt.Println("Client certificate loaded successfully.") // Add logging
 
-	// Load CA certificates (full chain)
-	caCerts, err := loadCertificates(caCertPath)
+	caCerts, err := loadCertificates(caPaths)
 	if err != nil {
-		return err
+		return fmt.Errorf("error loading CA certificates: %v", err)
 	}
 	defer C.sk_X509_free(caCerts)
+	fmt.Println("CA certificates loaded successfully.") // Add logging
 
-	// Load CRL
-	crl, err := loadCRL(crlPath)
+	crls, err := loadCRLs(crlPaths)
 	if err != nil {
-		return err
+		return fmt.Errorf("error loading CRLs: %v", err)
 	}
-	defer C.X509_CRL_free(crl)
+	defer func() {
+		for _, crl := range crls {
+			C.X509_CRL_free(crl)
+		}
+	}()
+	fmt.Println("CRLs loaded successfully.") // Add logging
 
-	// Create a new X.509 trust store
 	store := C.X509_STORE_new()
 	if store == nil {
 		return fmt.Errorf("failed to create X509_STORE")
 	}
 	defer C.X509_STORE_free(store)
+	fmt.Println("X509_STORE created successfully.") // Add logging
 
-	// Add each CA certificate in the chain to the store
-	numCerts := C.sk_X509_num(caCerts)
-	for i := C.int(0); i < numCerts; i++ {
-		caCert := C.sk_X509_value(caCerts, i)
-		if C.X509_STORE_add_cert(store, caCert) != 1 {
-			return fmt.Errorf("failed to add CA certificate to trust store")
+	// Add CA certs to store
+	for i := C.int(0); i < C.int(C.sk_X509_num(caCerts)); i++ {
+		ca := C.sk_X509_value(caCerts, C.size_t(i))
+		if C.X509_STORE_add_cert(store, ca) != 1 {
+			C.ERR_print_errors_fp(C.stderr)
+			return fmt.Errorf("failed to add CA cert to store")
 		}
 	}
+	fmt.Println("CA certificates added to X509_STORE.") // Add logging
 
-	// Add CRL to the store
-	if C.X509_STORE_add_crl(store, crl) != 1 {
-		return fmt.Errorf("failed to add CRL to trust store")
+	// Add CRLs to store
+	for _, crl := range crls {
+		if C.X509_STORE_add_crl(store, crl) != 1 {
+			C.ERR_print_errors_fp(C.stderr)
+			return fmt.Errorf("failed to add CRL to store")
+		}
 	}
+	fmt.Println("CRLs added to X509_STORE.") // Add logging
 
-	// Enable CRL checking
 	C.X509_STORE_set_flags(store, C.X509_V_FLAG_CRL_CHECK|C.X509_V_FLAG_CRL_CHECK_ALL)
+	fmt.Println("CRL check flags set on X509_STORE.") // Add logging
 
-	// Create a verification context
 	ctx := C.X509_STORE_CTX_new()
 	if ctx == nil {
 		return fmt.Errorf("failed to create X509_STORE_CTX")
 	}
 	defer C.X509_STORE_CTX_free(ctx)
+	fmt.Println("X509_STORE_CTX created successfully.") // Add logging
 
-	// Initialize verification context
 	if C.X509_STORE_CTX_init(ctx, store, clientCert, nil) != 1 {
+		C.ERR_print_errors_fp(C.stderr)
 		return fmt.Errorf("failed to initialize verification context")
 	}
+	fmt.Println("X509_STORE_CTX initialized successfully.") // Add logging
 
-	// Perform certificate verification
 	result := C.X509_verify_cert(ctx)
 	if result != 1 {
 		errCode := C.X509_STORE_CTX_get_error(ctx)
 		errStr := C.X509_verify_cert_error_string(C.long(errCode))
+		fmt.Printf("Verification error code: %d, error string: %s\n", errCode, C.GoString(errStr)) // Add logging
 		return fmt.Errorf("certificate verification failed: %s (error code: %d)", C.GoString(errStr), errCode)
 	}
 
-	fmt.Println("Certificate is valid and has not been revoked!")
+	fmt.Println("Certificate is valid and has not been revoked.") // Add logging
 	return nil
 }
 
 func main() {
 	if len(os.Args) < 4 {
-		fmt.Println("Usage: go run validate_cert.go <client_cert.pem> <ca_chain.pem> <crl.pem>")
+		fmt.Println("Usage: go run verify_cert_and_crl.go <leaf_cert.pem> <ca1.pem,ca2.pem,...> <crl1.pem,crl2.pem,...>")
 		return
 	}
 
-	clientCertPath := os.Args[1]
-	caCertPath := os.Args[2] // Use full CA chain
-	crlPath := os.Args[3]
+	certPath := os.Args[1]
+	caPaths := strings.Split(os.Args[2], ",")
+	crlPaths := strings.Split(os.Args[3], ",")
 
-	err := validateCertificate(clientCertPath, caCertPath, crlPath)
-	if err != nil {
+	if err := validateCertificate(certPath, caPaths, crlPaths); err != nil {
 		fmt.Printf("Validation failed: %v\n", err)
 	} else {
-		fmt.Println("Client certificate is valid against the CA trust store and CRL.")
+		fmt.Println("Client certificate is valid against CA chain and CRLs.")
 	}
 }
